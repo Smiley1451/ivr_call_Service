@@ -1,0 +1,52 @@
+HELP.md
+.env
+google-credentials.json
+src/main/resources/google-credentials.json
+
+# Sensitive application configs and credentials (local overrides)
+# Do not commit local Spring Boot properties that may contain secrets
+application.properties
+src/main/resources/application.properties
+
+# Generic credentials files and JSON secrets
+credentials.json
+**/google-credentials.json
+src/main/resources/*.json
+
+# Common private key / certificate formats
+*.key
+*.pem
+*.jks
+*.p12
+
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###

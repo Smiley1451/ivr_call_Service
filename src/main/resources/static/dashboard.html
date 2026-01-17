@@ -1,0 +1,348 @@
+<!-- ============================================
+FILE: src/main/resources/static/dashboard.html
+============================================ -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Labour Connect - Live Call Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected {
+            background: #10b981;
+        }
+
+        .status-dot.disconnected {
+            background: #ef4444;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .stat-card h3 {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .stat-card .number {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .logs-container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .logs-container h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .log-entry {
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 4px solid;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .log-entry.INFO {
+            background: #e0f2fe;
+            border-color: #0ea5e9;
+        }
+
+        .log-entry.SUCCESS {
+            background: #d1fae5;
+            border-color: #10b981;
+        }
+
+        .log-entry.WARNING {
+            background: #fef3c7;
+            border-color: #f59e0b;
+        }
+
+        .log-entry.ERROR {
+            background: #fee2e2;
+            border-color: #ef4444;
+        }
+
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+
+        .log-time {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .log-callsid {
+            font-size: 12px;
+            color: #999;
+            font-family: monospace;
+        }
+
+        .log-message {
+            color: #333;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .no-logs {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #764ba2;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>📞 Labour Connect - Live Call Dashboard</h1>
+        <div class="connection-status">
+            <div id="statusDot" class="status-dot disconnected"></div>
+            <span id="statusText">Connecting...</span>
+        </div>
+    </div>
+
+    <div class="stats">
+        <div class="stat-card">
+            <h3>Total Calls</h3>
+            <div class="number" id="totalCalls">0</div>
+        </div>
+        <div class="stat-card">
+            <h3>Active Calls</h3>
+            <div class="number" id="activeCalls">0</div>
+        </div>
+        <div class="stat-card">
+            <h3>Completed</h3>
+            <div class="number" id="completedCalls">0</div>
+        </div>
+        <div class="stat-card">
+            <h3>SMS Sent</h3>
+            <div class="number" id="smsSent">0</div>
+        </div>
+    </div>
+
+    <div class="logs-container">
+        <h2>Live Call Logs</h2>
+        <div id="logs">
+            <div class="no-logs">Waiting for calls...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let stompClient = null;
+    let stats = {
+        totalCalls: 0,
+        activeCalls: 0,
+        completedCalls: 0,
+        smsSent: 0
+    };
+    let activeCalls = new Set();
+
+    function connect() {
+        const socket = new SockJS('/ws-logs');
+        stompClient = Stomp.over(socket);
+
+        stompClient.connect({}, function(frame) {
+            console.log('Connected: ' + frame);
+            updateConnectionStatus(true);
+
+            stompClient.subscribe('/topic/call-logs', function(message) {
+                const event = JSON.parse(message.body);
+                handleLogEvent(event);
+            });
+        }, function(error) {
+            console.log('Error: ' + error);
+            updateConnectionStatus(false);
+            setTimeout(connect, 5000); // Reconnect after 5 seconds
+        });
+    }
+
+    function updateConnectionStatus(connected) {
+        const dot = document.getElementById('statusDot');
+        const text = document.getElementById('statusText');
+
+        if (connected) {
+            dot.className = 'status-dot connected';
+            text.textContent = 'Connected';
+            text.style.color = '#10b981';
+        } else {
+            dot.className = 'status-dot disconnected';
+            text.textContent = 'Disconnected';
+            text.style.color = '#ef4444';
+        }
+    }
+
+    function handleLogEvent(event) {
+        // Update stats
+        if (event.eventType === 'CALL_START') {
+            stats.totalCalls++;
+            stats.activeCalls++;
+            activeCalls.add(event.callSid);
+        } else if (event.eventType === 'CALL_COMPLETE') {
+            stats.completedCalls++;
+            if (activeCalls.has(event.callSid)) {
+                stats.activeCalls--;
+                activeCalls.delete(event.callSid);
+            }
+        } else if (event.eventType === 'SMS_SENT') {
+            stats.smsSent++;
+        }
+
+        updateStats();
+        addLogEntry(event);
+    }
+
+    function updateStats() {
+        document.getElementById('totalCalls').textContent = stats.totalCalls;
+        document.getElementById('activeCalls').textContent = stats.activeCalls;
+        document.getElementById('completedCalls').textContent = stats.completedCalls;
+        document.getElementById('smsSent').textContent = stats.smsSent;
+    }
+
+    function addLogEntry(event) {
+        const logsDiv = document.getElementById('logs');
+
+        // Remove "no logs" message if present
+        const noLogs = logsDiv.querySelector('.no-logs');
+        if (noLogs) {
+            noLogs.remove();
+        }
+
+        const logEntry = document.createElement('div');
+        logEntry.className = `log-entry ${event.status}`;
+
+        const time = new Date(event.timestamp).toLocaleTimeString('en-IN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+
+        logEntry.innerHTML = `
+            <div class="log-header">
+                <span class="log-time">${time}</span>
+                <span class="log-callsid">${event.callSid || 'N/A'}</span>
+            </div>
+            <div class="log-message">${event.message}</div>
+        `;
+
+        logsDiv.insertBefore(logEntry, logsDiv.firstChild);
+
+        // Keep only last 50 logs
+        while (logsDiv.children.length > 50) {
+            logsDiv.removeChild(logsDiv.lastChild);
+        }
+    }
+
+    // Connect on page load
+    connect();
+</script>
+</body>
+</html>
