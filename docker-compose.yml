@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  ivr-service:
+    build: .
+    image: smileyishere1008/ivr-service:latest
+    container_name: ivr-service
+    restart: unless-stopped
+    ports:
+      - "8089:8089"
+    environment:
+      # Optional: activate docker profile if you want the app to use container hostnames
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:}
+
+      # Postgres connection (defaults target host's mapped ports)
+      - POSTGRES_HOST=${POSTGRES_HOST:localhost}
+      - POSTGRES_PORT=${POSTGRES_PORT:5432}
+      - POSTGRES_DB=${POSTGRES_DB:ivr}
+      - POSTGRES_USER=${POSTGRES_USER:anand}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:1008}
+
+      # Kafka connection
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+      - KAFKA_ADMIN_BOOTSTRAP_SERVERS=${KAFKA_ADMIN_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}}
+
+    networks:
+      - prohands
+
+networks:
+  prohands:
+    external: true
+

@@ -13,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -32,7 +33,9 @@ public class IVRController {
     private final SpeechToTextService speechToTextService;
     private final CallLogService callLogService;
     private final AudioService audioService;
-    private final WebSocketLogService webSocketLogService; // ✅ NEW
+    private final WebSocketLogService webSocketLogService;
+    private final GroqService groqService;
+    private final KafkaProducerService kafkaProducerService;
 
     @Value("${twilio.webhook.base.url}")
     private String baseUrl;
@@ -385,7 +388,13 @@ public class IVRController {
             webSocketLogService.logDataCollected(session.getCallSid(), "type_of_work", typeOfWork);
             webSocketLogService.logDataCollected(session.getCallSid(), "location", location);
 
-            // 2. Save to database
+            // 2. Get coordinates from Groq
+            double[] coordinates = groqService.getCoordinates(location);
+            double latitude = coordinates[0];
+            double longitude = coordinates[1];
+            log.info("Coordinates for {}: lat={}, lng={}", location, latitude, longitude);
+
+            // 3. Save to database
             WorkDTO workDTO = WorkDTO.builder()
                     .phoneNo(session.getPhoneNo())
                     .typeOfWork(typeOfWork)
@@ -396,7 +405,21 @@ public class IVRController {
             Work work = workService.postWork(workDTO);
             webSocketLogService.logDatabaseSaved(session.getCallSid(), "Work", work.getWorkId());
 
-            // 3. Find matches
+            // 4. Publish Kafka Event
+            WhatsAppBotJobEvent jobEvent = new WhatsAppBotJobEvent(
+                    session.getPhoneNo(), // providerId (mobile number)
+                    "Employer", // providerName (we don't collect name, using generic)
+                    typeOfWork, // title
+                    "Job posted via IVR", // description
+                    work.getWagesOffered() != null ? work.getWagesOffered().doubleValue() : 0.0, // wage
+                    latitude,
+                    longitude,
+                    Collections.singletonList(typeOfWork), // requiredSkills
+                    1 // numberOfEmployees
+            );
+            kafkaProducerService.sendJobEvent(jobEvent);
+
+            // 5. Find matches (Local logic - kept for SMS fallback)
             MatchResultDTO matches = matchingService.findMatchingWorkers(
                     work.getTypeOfWork(),
                     work.getLocation(),
@@ -406,7 +429,7 @@ public class IVRController {
             int matchCount = matches.getWorkers() != null ? matches.getWorkers().size() : 0;
             webSocketLogService.logMatchingStarted(session.getCallSid(), matchCount);
 
-            // 4. Send SMS
+            // 6. Send SMS
             twilioService.sendWorkerMatchesSMS(
                     session.getPhoneNo(),
                     matches.getWorkers(),
@@ -414,7 +437,7 @@ public class IVRController {
             );
             webSocketLogService.logSmsSent(session.getCallSid(), session.getPhoneNo());
 
-            // 5. Log call completion
+            // 7. Log call completion
             long duration = (System.currentTimeMillis() - session.getStartTime()) / 1000;
             callLogService.logCall(
                     session.getPhoneNo(),
