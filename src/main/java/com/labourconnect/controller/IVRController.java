@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -182,19 +183,9 @@ public class IVRController {
             return createErrorResponse("Session expired.");
         }
 
-        String transcript = speechToTextService.transcribeAudioFromUrl(
-                recordingUrl + ".wav",
-                session.getLanguagePreference()
-        );
-
-        if (transcript != null && speechToTextService.isValidTranscription(transcript)) {
-            transcript = speechToTextService.cleanTranscription(transcript);
-            session.addCollectedData(field, transcript);
-            log.info("Collected {}: {}", field, transcript);
-
-            // ✅ Broadcast to dashboard
-            webSocketLogService.logDataCollected(callSid, field, transcript);
-        }
+        // Store the recording URL for later processing
+        session.addCollectedData(field + "_url", recordingUrl);
+        log.info("Stored recording URL for {}: {}", field, recordingUrl);
 
         String nextField = switch (field) {
             case "name" -> "work_expertise";
@@ -206,46 +197,84 @@ public class IVRController {
         if (nextField != null) {
             return collectJobSeekerData(session, nextField);
         } else {
+            // All data collected, end call and start background processing
             return finalizeJobSeeker(session);
         }
     }
 
     private String finalizeJobSeeker(IVRSessionDTO session) {
-        log.info("Finalizing job seeker registration");
+        log.info("Finalizing job seeker registration - Starting background processing");
 
+        // Start background processing
+        processJobSeekerAsync(session);
+
+        // Play completion message and hang up immediately
+        String audioUrl = audioService.getAudioUrl("completion_job_seeker", session.getLanguagePreference());
+        Play play = new Play.Builder(audioUrl).build();
+
+        VoiceResponse response = new VoiceResponse.Builder()
+                .play(play)
+                .hangup(new Hangup.Builder().build())
+                .build();
+
+        return response.toXml();
+    }
+
+    @Async
+    protected void processJobSeekerAsync(IVRSessionDTO session) {
+        log.info("Async processing for job seeker started - CallSid: {}", session.getCallSid());
+        
         try {
+            // 1. Transcribe all audio files
+            String nameUrl = session.getCollectedData().get("name_url");
+            String expertiseUrl = session.getCollectedData().get("work_expertise_url");
+            String locationUrl = session.getCollectedData().get("location_url");
+
+            String name = transcribe(nameUrl, session.getLanguagePreference());
+            String expertise = transcribe(expertiseUrl, session.getLanguagePreference());
+            String location = transcribe(locationUrl, session.getLanguagePreference());
+
+            // Update session with transcribed data
+            session.addCollectedData("name", name);
+            session.addCollectedData("work_expertise", expertise);
+            session.addCollectedData("location", location);
+
+            // Log collected data
+            webSocketLogService.logDataCollected(session.getCallSid(), "name", name);
+            webSocketLogService.logDataCollected(session.getCallSid(), "work_expertise", expertise);
+            webSocketLogService.logDataCollected(session.getCallSid(), "location", location);
+
+            // 2. Save to database
             LabourDTO labourDTO = LabourDTO.builder()
                     .phoneNo(session.getPhoneNo())
-                    .name(session.getCollectedData().get("name"))
-                    .workExpertise(session.getCollectedData().get("work_expertise"))
-                    .location(session.getCollectedData().get("location"))
+                    .name(name)
+                    .workExpertise(expertise)
+                    .location(location)
                     .languagePreference(session.getLanguagePreference())
                     .build();
 
             Labour labour = labourService.registerLabour(labourDTO);
-
-            // ✅ Broadcast to dashboard
             webSocketLogService.logDatabaseSaved(session.getCallSid(), "Labour", labour.getLabourId());
 
+            // 3. Find matches
             MatchResultDTO matches = matchingService.findMatchingJobs(
                     labour.getWorkExpertise(),
                     labour.getLocation(),
                     labour.getPreferredWage()
             );
 
-            // ✅ Broadcast to dashboard
             int matchCount = matches.getJobs() != null ? matches.getJobs().size() : 0;
             webSocketLogService.logMatchingStarted(session.getCallSid(), matchCount);
 
+            // 4. Send SMS
             twilioService.sendJobMatchesSMS(
                     session.getPhoneNo(),
                     matches.getJobs(),
                     session.getLanguagePreference()
             );
-
-            // ✅ Broadcast to dashboard
             webSocketLogService.logSmsSent(session.getCallSid(), session.getPhoneNo());
 
+            // 5. Log call completion
             long duration = (System.currentTimeMillis() - session.getStartTime()) / 1000;
             callLogService.logCall(
                     session.getPhoneNo(),
@@ -254,29 +283,14 @@ public class IVRController {
                     (int) duration,
                     "completed"
             );
-
-            // ✅ Broadcast to dashboard
             webSocketLogService.logCallCompleted(session.getCallSid(), (int) duration);
 
+            // Clean up session
             sessions.remove(session.getCallSid());
 
-            String audioUrl = audioService.getAudioUrl("completion_job_seeker", session.getLanguagePreference());
-            Play play = new Play.Builder(audioUrl).build();
-
-            VoiceResponse response = new VoiceResponse.Builder()
-                    .play(play)
-                    .hangup(new Hangup.Builder().build())
-                    .build();
-
-            return response.toXml();
-
         } catch (Exception e) {
-            log.error("Error finalizing job seeker: {}", e.getMessage(), e);
-
-            // ✅ Broadcast error to dashboard
+            log.error("Error in async job seeker processing: {}", e.getMessage(), e);
             webSocketLogService.logError(session.getCallSid(), e.getMessage());
-
-            return createErrorResponse("An error occurred. Please try again.");
         }
     }
 
@@ -315,19 +329,9 @@ public class IVRController {
             return createErrorResponse("Session expired.");
         }
 
-        String transcript = speechToTextService.transcribeAudioFromUrl(
-                recordingUrl + ".wav",
-                session.getLanguagePreference()
-        );
-
-        if (transcript != null && speechToTextService.isValidTranscription(transcript)) {
-            transcript = speechToTextService.cleanTranscription(transcript);
-            session.addCollectedData(field, transcript);
-            log.info("Collected {}: {}", field, transcript);
-
-            // ✅ Broadcast to dashboard
-            webSocketLogService.logDataCollected(callSid, field, transcript);
-        }
+        // Store the recording URL for later processing
+        session.addCollectedData(field + "_url", recordingUrl);
+        log.info("Stored recording URL for {}: {}", field, recordingUrl);
 
         String nextField = switch (field) {
             case "type_of_work" -> "location";
@@ -338,45 +342,79 @@ public class IVRController {
         if (nextField != null) {
             return collectEmployerData(session, nextField);
         } else {
+            // All data collected, end call and start background processing
             return finalizeEmployer(session);
         }
     }
 
     private String finalizeEmployer(IVRSessionDTO session) {
-        log.info("Finalizing employer registration");
+        log.info("Finalizing employer registration - Starting background processing");
+
+        // Start background processing
+        processEmployerAsync(session);
+
+        // Play completion message and hang up immediately
+        String audioUrl = audioService.getAudioUrl("completion_employer", session.getLanguagePreference());
+        Play play = new Play.Builder(audioUrl).build();
+
+        VoiceResponse response = new VoiceResponse.Builder()
+                .play(play)
+                .hangup(new Hangup.Builder().build())
+                .build();
+
+        return response.toXml();
+    }
+
+    @Async
+    protected void processEmployerAsync(IVRSessionDTO session) {
+        log.info("Async processing for employer started - CallSid: {}", session.getCallSid());
 
         try {
+            // 1. Transcribe all audio files
+            String typeUrl = session.getCollectedData().get("type_of_work_url");
+            String locationUrl = session.getCollectedData().get("location_url");
+
+            String typeOfWork = transcribe(typeUrl, session.getLanguagePreference());
+            String location = transcribe(locationUrl, session.getLanguagePreference());
+
+            // Update session with transcribed data
+            session.addCollectedData("type_of_work", typeOfWork);
+            session.addCollectedData("location", location);
+
+            // Log collected data
+            webSocketLogService.logDataCollected(session.getCallSid(), "type_of_work", typeOfWork);
+            webSocketLogService.logDataCollected(session.getCallSid(), "location", location);
+
+            // 2. Save to database
             WorkDTO workDTO = WorkDTO.builder()
                     .phoneNo(session.getPhoneNo())
-                    .typeOfWork(session.getCollectedData().get("type_of_work"))
-                    .location(session.getCollectedData().get("location"))
+                    .typeOfWork(typeOfWork)
+                    .location(location)
                     .languagePreference(session.getLanguagePreference())
                     .build();
 
             Work work = workService.postWork(workDTO);
-
-            // ✅ Broadcast to dashboard
             webSocketLogService.logDatabaseSaved(session.getCallSid(), "Work", work.getWorkId());
 
+            // 3. Find matches
             MatchResultDTO matches = matchingService.findMatchingWorkers(
                     work.getTypeOfWork(),
                     work.getLocation(),
                     work.getWagesOffered()
             );
 
-            // ✅ Broadcast to dashboard
             int matchCount = matches.getWorkers() != null ? matches.getWorkers().size() : 0;
             webSocketLogService.logMatchingStarted(session.getCallSid(), matchCount);
 
+            // 4. Send SMS
             twilioService.sendWorkerMatchesSMS(
                     session.getPhoneNo(),
                     matches.getWorkers(),
                     session.getLanguagePreference()
             );
-
-            // ✅ Broadcast to dashboard
             webSocketLogService.logSmsSent(session.getCallSid(), session.getPhoneNo());
 
+            // 5. Log call completion
             long duration = (System.currentTimeMillis() - session.getStartTime()) / 1000;
             callLogService.logCall(
                     session.getPhoneNo(),
@@ -385,30 +423,27 @@ public class IVRController {
                     (int) duration,
                     "completed"
             );
-
-            // ✅ Broadcast to dashboard
             webSocketLogService.logCallCompleted(session.getCallSid(), (int) duration);
 
+            // Clean up session
             sessions.remove(session.getCallSid());
 
-            String audioUrl = audioService.getAudioUrl("completion_employer", session.getLanguagePreference());
-            Play play = new Play.Builder(audioUrl).build();
-
-            VoiceResponse response = new VoiceResponse.Builder()
-                    .play(play)
-                    .hangup(new Hangup.Builder().build())
-                    .build();
-
-            return response.toXml();
-
         } catch (Exception e) {
-            log.error("Error finalizing employer: {}", e.getMessage(), e);
-
-            // ✅ Broadcast error to dashboard
+            log.error("Error in async employer processing: {}", e.getMessage(), e);
             webSocketLogService.logError(session.getCallSid(), e.getMessage());
-
-            return createErrorResponse("An error occurred. Please try again.");
         }
+    }
+
+    private String transcribe(String url, String language) {
+        if (url == null) return "Unknown";
+        
+        String transcript = speechToTextService.transcribeAudioFromUrl(url + ".wav", language);
+        
+        if (transcript != null && speechToTextService.isValidTranscription(transcript)) {
+            return speechToTextService.cleanTranscription(transcript);
+        }
+        
+        return "Unknown";
     }
 
     @PostMapping("/recording-status")
